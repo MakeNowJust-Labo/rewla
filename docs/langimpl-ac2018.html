@@ -1,0 +1,481 @@
+<!doctype html><meta charset="utf-8"><script src="https://makenowjust.github.io/md.html/main.js"></script><noscript>
+<!-- vim: set ft=markdown: -->
+---
+title: 先読み付き正規表現の微分について
+---
+
+$$
+\gdef\posla#1{\langle\texttt{?=} #1 \rangle}%
+\gdef\negla#1{\langle\texttt{?!} #1 \rangle}%
+$$
+
+# 先読み付き正規表現の微分について
+
+著者: [@MakeNowJust](https://github.com/MakeNowJust)
+最終更新日: 2018/12/16
+
+## はじめに
+
+「さっき作った」こと[@MakeNowJust](https://github.com/MakeNowJust)です。この記事は[言語実装 Advent Calendar 2018](https://qiita.com/advent-calendar/2018/lang_dev)の16日目になります。
+
+言語実装というか形式言語の話になってしまいましたが、形式言語も言語だと思うので許してください。
+
+## 先読み付き正規表現？ 微分？
+
+初めに**先読み付き正規表現**と正規表現の**微分**について軽く解説します。
+
+### 先読み付き正規表現
+
+先読み付き正規表現というのは、読んで字の如く正規表現に**先読み**という演算子を追加したものです。
+この先読みという演算子は最近の正規表現エンジンなら大体実装されているもので、肯定先読み`(?=...)`と否定先読み`(?!...)`という記法が使われ、先読みに遭遇した位置からマッチするとき(否定先読みの場合マッチしないとき)にマッチするけれど、文字列は読み進めないという動作をします。
+
+例えば`/Java(?!Script)/`という否定先読みを使った正規表現は、`"Java"`にはマッチしますが`"JavaScript"`のように`"Java"`のあとに`"Script"`が続いている場合はマッチしません。
+
+```ruby
+re = /Java(?!Script)/
+s = "Java JavaScript JavaApplet"
+
+s.scan(re) do
+  pp [$~.begin(0), $~[0]]
+end
+
+# outputs:
+#   [0, "Java"]
+#   [16, "Java"]
+```
+
+`0`文字目と`16`文字目で`"Java"`のマッチしていますが、`5`文字目の`"Java"`は`"Script"`が続いているのでマッチしていません。
+
+とまあ、こういうものがあるんだな、くらいの気持ちでいてください。
+
+### 微分
+
+次に正規表現の微分についてです。
+
+正規表現の先頭から文字`'a'`を取り除く操作を考えます。
+例えば`/ab/`の先頭から`'a'`を取り除いたら`/b/`になります。また、`/ab|ac|bc/`から`'a'`を取り除いたら`/b|c/`になります。
+このように、ある正規表現の先頭からある文字を取り除くことを、正規表現の微分(derivatives)と呼びます。
+
+当然ながら、ある正規表現をある文字で微分した結果の正規表現がマッチする文字列は、元の正規表現のうち微分した文字から始まるものからそれを取り除いたものと一致します。
+
+この微分を使って、決定性有限状態オートマトンを構成したり、正規表現の等価性を判定したり出来ることが知られています。
+
+今回は、この微分を先読み付き正規表現について定義して、その正当性を確認します。
+
+## 前提知識など
+
+通常の正規表現や正規言語などについての説明は省略していくので、その辺りの知識があると理解が早いと思います。
+
+$\varnothing$は空集合を表すものとします。($\empty$は空集合とは異なる意味で使います。)
+
+$\Sigma$を有限のアルファベットとします。$\Sigma$の元$\sigma$を文字と呼び、文字を一列に並べたものを文字列と呼びます。
+文字列$w_1, w_2$について、$w_1 \cdot w_2$は$w_1$のあとに$w_2$を並べたものを表し、これを文字列の連接と呼びます。曖昧さが無い場合は$w_1 \cdot w_2$と$w_1 w_2$と表す場合があります。
+$\varepsilon$は空文字列を表します。
+
+$\Sigma$の文字列全体からなる集合を$\Sigma^\ast$と表します。また、この部分集合を言語と呼びます。
+言語$W_1, W_2$について、$W_1 \cdot W_2 = \{\ w\ |\ \exists\ w_1 \in W_1,\ w_2 \in W_2.\ w = w_1 \cdot w_2 \ \}$とします。
+
+言語$W$と文字$\sigma$について、$D(\sigma, W) = \{\ v\ |\ \exists\ w \in W.\ \sigma v = w\ \}$とします。
+これは$W$に含まれる文字列のうち$\sigma$から始まるものからそれを取り除いた文字列の集合で、$W$を$\sigma$で微分したものです。
+$\sigma, W_1, W_2$について、$\Sigma^\ast = D(\sigma, \Sigma^\ast),\ D(\sigma, W_1 \cup W_2) = D(\sigma, W_1) \cup D(\sigma, W_2),\ D(\sigma, W_1 \cap W_2) = D(\sigma, W_1) \cap D(\sigma, W_2),\ D(\sigma, W_1 \setminus W_2) = D(\sigma, W_1) \setminus D(\sigma, W_2)$が明らかに成り立ちます。
+
+## 先読み付き正規表現の定義
+
+$\Sigma$上の先読み付き正規表現とは、次の構文で表されるものとします。
+
+$$
+\begin{aligned}
+e ::=\ & \epsilon  & & \textrm{(空文字列)}     & |\quad & \empty    & & \textrm{(失敗)}       \\
+|\quad & \sigma    & & \textrm{(文字)}         \\
+|\quad & e | e     & & \textrm{(選択)}         & |\quad & e \cdot e & & \textrm{(連接)}       \\
+|\quad & e^\ast    & & \textrm{(クリーニ閉包)} \\
+|\quad & \posla{e} & & \textrm{(肯定先読み)}   & |\quad & \negla{e} & & \textrm{(否定先読み)} \\
+\end{aligned}
+$$
+
+ここで$\sigma \in \Sigma$です。
+
+演算子の優先順位は選択よりも連接の方が強く、必要な場合は括弧で囲って結合順位を明示します。また、文字列の場合と同様に$e_1 \cdot e_2$は$e_1 e_2$と表す場合があります。
+以降、$\Sigma$上の先読み付き正規表現は単に先読み付き正規表現と呼ぶことにします。
+
+さて、先読み付き正規表現とは何たるかを説明できたので、次にやることと言えば——そう、先読み付き正規表現の言語を定義することですね。
+先読み付き正規表現の言語とは、ある先読み付き正規表現がマッチする全ての文字列からなる集合のことです。
+先読み付き正規表現$e$の言語を$L(e)$と表すことにします。
+
+それでは、どうやって先読み付き正規表現の言語を定義しましょうか？
+これは地味に難しい問題です。というのも先読みはマッチする文字列としては空文字列$\varepsilon$しか無いのですが、それがマッチするためには条件が必要になります。
+
+先読み付き正規表現の言語を表す方法はいくつかあると思いますが、今回は$L'(e, W)$という補助関数を考えることにします。$W$は$e$の後に続く可能性のある文字列の集合です。
+
+$L(e)$と$L'(e, W)$の関係は次のようになります。
+
+$$
+L(e) = L'(e, \{\ \varepsilon\ \})
+$$
+
+次に$L'(e, W)$の定義です。同時に$\rho^\ast(e, W)$と$\rho(e, n, W)$を定義しています。
+
+$$
+\begin{aligned}
+  \begin{aligned}
+  L'(\epsilon, W)      & = W                              \\
+  L'(\empty, W)        & = \varnothing                    \\
+  L'(\sigma, W)        & = \{\ \sigma\ \} \cdot W         \\
+  L'(e_1 | e_2, W)     & = L'(e_1, W) \cup L'(e_2, W)     \\
+  L'(e_1 \cdot e_2, W) & = L'(e_1, L(e_2, W))             \\
+  L'(e^\ast, W)        & = \rho^\ast(e, W)                \\
+  L'(\posla{e}, W)     & = W \cap L'(e, \Sigma^\ast)      \\
+  L'(\negla{e}, W)     & = W \setminus L'(e, \Sigma^\ast) \\
+  \end{aligned}
+\quad
+  \begin{aligned}
+  \rho^\ast(e, W) & = \bigcup_{n \ge 0} \rho(e, n, W) \\
+  \\
+  \rho(e, 0, W)     & = W \\
+  \rho(e, n + 1, W) & = L'(e, \rho(e, n, W)) \\
+  \end{aligned}
+  \end{aligned}
+$$
+
+$\rho(e, n, W)$は$e$を$n$回繰り返したあとに$W$が続くような文字列の集合を返す関数で、$\rho^\ast(e, W)$は全ての$n$についての$\rho(e, n, W)$を和集合を取る関数です。
+$\rho(e, n, W)$と$\rho^\ast(e, W)$はそれぞれ、言語の$n$回の繰り返し$L(e)^n$と言語のクリーニ閉包$L(e)^\ast$の後に$W$が続くものだと考えてください。
+
+$L'(e, W)$の定義で注目するところはいくつかあります。
+
+まずは$e = e_1 \cdot e_2$の場合です。$L'(e_1 \cdot e_2, W) = L'(e_1, L'(e_2, W))$ですが、$L'(e, W)$をカリー化させて合成関数の演算子$\circ$を用いると$(L'(e_1) \circ L'(e_2))(W)$になります。つまり、$L'(e, W)$での連接は合成関数と対応しているわけです。
+ちなみにこの後続の文字列を受け取る関数を使って、文字列の連接を関数合成にするテクニックは、実際のプログラミングでも使われることがあります。例えばHaskellの`ShowS`型ですね。[^ この辺は`Endo`型が`Monoid`になっていることとかと関係がある気がしていますが、説明できるほど分かっていないです。]
+
+その他には$\posla{e}$と$\negla{e}$の場合です。この二つはそれぞれ後続の文字列の集合に対する積集合と差集合を取る操作になっていて、形式言語という視点から見たときの先読みというものが何たるかを如実にしています。
+
+また、先読み付き正規表現$e$と言語$W_1, W_2$について$L'(e, W_1 \cup W_2) = L'(e, W_1) \cup L'(e, W_2)$が成り立ちます。
+
+勘が良い人はこの時点で先読み付き正規表現$e$の言語$L(e)$は正規言語であることに気が付くと思います。[^ $W$が正規言語の場合$L'(e, W)$の中では正規言語に閉じた演算しかしておらず、$\{\ \varepsilon\ \}$も正規言語のため。]
+先読み付き正規表現の微分を使って決定性有限状態オートマトンが構築できるはずなので先読み付き正規表現は間違いなく正規なのですが、この$L(e)$の定義だと既にそのことが分かるのは興味深いです。
+
+## 先読み付き正規表現の微分
+
+先読み付き正規表現$e$を$\sigma$で微分する関数$d(\sigma, e)$を定義します。同時に$\nu(\sigma, e)$という関数も定義します。
+
+$$
+\begin{aligned}
+  \begin{aligned}
+  d(\sigma, \epsilon)      & = \empty                                               \\
+  d(\sigma, \empty)        & = \empty                                               \\
+  d(\sigma, \sigma')       &= \begin{cases}
+                                \epsilon & \textrm{if $\sigma = \sigma'$} \\
+                                \empty   & \textrm{otherwise}
+                              \end{cases}                                           \\
+  d(\sigma, e_1 | e_2)     & = d(\sigma, e_1) | d(\sigma, e_2)                      \\
+  d(\sigma, e_1 \cdot e_2) & = d(\sigma, e_1) e_2 | \nu(\sigma, e_1) d(\sigma, e_2) \\
+  d(\sigma, e_1^\ast)      & = d(\sigma, e_1) e_1^\ast                              \\
+  d(\sigma, \posla{e_1})   & = \empty                                               \\
+  d(\sigma, \negla{e_1})   & = \empty                                               \\
+  \end{aligned}
+\quad
+  \begin{aligned}
+  \nu(\sigma, \epsilon)      & = \epsilon \\
+  \nu(\sigma, \empty)        & = \empty \\
+  \nu(\sigma, \sigma')       & = \empty \\
+  \nu(\sigma, e_1 | e_2)     & = \nu(\sigma, e_1) | \nu(\sigma, e_2) \\
+  \nu(\sigma, e_1^\ast)      & = \empty \\
+  \nu(\sigma, \posla{e_1})   & = \posla{d(\sigma, e_1) | \nu(\sigma, e_1)} \\
+  \nu(\sigma, \negla{e_1})   & = \posla{d(\sigma, e_1) | \nu(\sigma, e_1)} \\
+  \end{aligned}
+\end{aligned}
+$$
+
+通常の正規表現の先読みを知っていれば、それとほとんど変わらないことが分かると思います。
+ですが、$\nu(\sigma, e)$は通常の正規表現のものとは異なり、$\sigma$を受け取っています。これは、通常の正規表現の場合$\nu(e)$は$L(e)$が$\varepsilon$を含む場合に$\epsilon$、そうでない場合に$\empty$を返すような関数だったのですが、先読み付き正規表現の場合ここで先読みの内側の正規表現の微分するため$\sigma$を取る必要があるからです。
+
+また、文字$\sigma$と先読み付き正規表現$e$と言語$W$について、$L(\nu(\sigma, e), D(\sigma, W)) \subseteq D(\sigma, W)$が成り立ちます。
+
+例として$d(a, \posla{a} (a | b)^\ast)$を計算してみたいと思います。
+
+$$
+\begin{aligned}
+    d(a, \posla{a} (a | b)^\ast)
+& = d(a, \posla{a}) (a | b)^\ast | \nu(a, \posla{a}) d(a, (a | b)^\ast) \\
+& = \empty (a | b)^\ast | \nu(a, \posla{a}) d(a, (a | b)^\ast) \\
+& = \empty (a | b)^\ast | \posla{d(a, a) | \nu(a, a)} d(a, (a | b)^\ast) \\
+& = \empty (a | b)^\ast | \posla{\epsilon | \empty} d(a, (a | b)^\ast) \\
+& = \empty (a | b)^\ast | \posla{\epsilon | \empty} d(a, (a | b)) (a | b)^\ast \\
+& = \empty (a | b)^\ast | \posla{\epsilon | \empty} \epsilon (a | b)^\ast \\
+\end{aligned}
+$$
+
+ここで$\empty e = \empty,\ \epsilon e = e,\ e | \empty = e, \posla{\epsilon} = \epsilon$とすると上の式は単純に$(a | b)^\ast$になり、$\posla{a} (a | b)^\ast$を$a$で微分した結果として正しそうに見えます。
+仮に先読みが二つ以上連続で並んでいたとしても先読み単体を微分した結果は常に$\empty$なので、先頭だけが微分されておかしな状態になる、といったことにはならなそうです。
+
+### 微分の正しさの証明
+
+とはいえ、この$d(\sigma, e)$が先読み付き正規表現の微分として妥当なものなのか確認しなければ使いものになりません。
+というわけで、ここからは$d(\sigma, e)$の正しさを証明していきます。
+
+では、$d(\sigma, e)$が先読み付き正規表現の微分として妥当であるとは、どのようなことでしょうか？
+感覚的には、$e$を$\sigma$で微分した結果の言語$L(d(\sigma, e))$と、$e$の言語$L(e)$を$\sigma$で微分したもの$D(\sigma, L(e))$が一致することであるように思えます。
+式にすると、$D(\sigma, L(e)) = L(d(\sigma, e))$ですね。
+
+しかし、これを直接する証明ことは難しそうです。
+仮に単純に$e$の構造についての帰納法をしたとすると、$e = e_1 \cdot e_2$の場合に$L'(d(\sigma, e_1), L(e_2))$という項が出てきますが、$L(e_2) = \{\ \varepsilon\ \}$では無い場合があるので帰納法の仮定が使えません。
+
+それでは全ての$W$について$D(\sigma, L'(e, W)) = L'(d(\sigma, e), W)$が成り立つ、というのはどうでしょうか？
+
+これもダメです。なぜならこの式はそもそも成り立ちません。
+$e = \epsilon$の場合$D(\sigma, L'(\epsilon, W)) = D(\sigma, W)$ですが、$L'(d(\sigma, \epsilon), W) = L'(\empty, W) = \varnothing$です。
+
+最終的に、$D(\sigma, L(e)) = L(d(\sigma, e))$を証明するために必要とする補題は、全ての$W$について、
+
+$$
+D(\sigma, L'(e, W)) = L'(d(\sigma, e), W) \cup L'(\nu(\sigma, e), D(\sigma, W))
+$$
+
+というものになります。
+恐らく先読み付き正規表現の微分で一番難しいのは、この式に気が付くことです。
+追加された項$L'(\nu(\sigma, e), D(\sigma, W))$は、直感的には先読みの部分を微分した結果で$W$を微分したものをさらにフィルターしたものになるのかと思います。
+
+ここまで分かれば証明することはそこまで難しく[^ 実際、ほとんどBrzozowskiがした正規表現の微分についての証明と同じ構造になります。]ないのですが、いくつか特徴的な部分があるので、省略せず実際に証明していきたいと思います。
+
+証明の概略を説明します。証明には、先読み付き正規表現$e$の構造についての帰納法を利用します。
+
+1. $e = \epsilon$と$e = \empty$の場合は特に難しいところはありません。
+2. $e = \sigma'$の場合は、$\sigma = \sigma'$のときとそうでないときで場合分けが必要になりますが、それだけです。
+3. $e = e_1 | e_2$と$e = e_1 \cdot e_2$の場合は、仮定を利用して式変形すれば目的の式を得られます。
+4. $e = e_1^\ast$の場合は少し工夫が必要になります。$L(\nu(\sigma, e), D(\sigma, W)) \subseteq D(\sigma, W)$の関係を利用することになります。
+5. $e = \posla{e}$と$e = \negla{e}$の場合も仮定を利用して式変形すれば目的の式を得られますが、途中で$\Sigma^\ast = D(\sigma, \Sigma^\ast)$の関係を利用します。
+
+まあ概略よりも実際の証明を見た方が早いでしょう。やっていきます。
+
+#### 補題: $D(\sigma, L'(e, W)) = L'(d(\sigma, e), W) \cup L'(\nu(\sigma, e), D(\sigma, W))$
+
+全ての文字$\sigma$と先読み付き正規表現$e$と言語$W$について、
+
+$$
+D(\sigma, L'(e, W)) = L'(d(\sigma, e), W) \cup L'(\nu(\sigma, e), D(\sigma, W))
+$$
+
+が成り立ちます。
+
+**証明**: $e$の構造について帰納法を行います。
+
+1. $e = \epsilon$の場合:
+
+   求める式は$D(\sigma, L'(\epsilon, W)) = L'(d(\sigma, \epsilon), W) \cup L'(\nu(\sigma, \epsilon), D(\sigma, W))$です。
+
+   左辺を変形すると$D(\sigma, L'(\epsilon, W)) = D(\sigma, W)$。
+   右辺を変形すると$L'(d(\sigma, \epsilon), W) \cup L'(\nu(\sigma, \epsilon), D(\sigma, W)) = L'(\empty, W) \cup L'(\epsilon, D(\sigma, W)) = D(\sigma, W)$。
+
+   よって左辺と右辺が同じ形になったので式は成り立ちます。
+
+2. $e = \empty$の場合:
+
+   求める式は$D(\sigma, L'(\empty, W)) = L'(d(\sigma, \empty), W) \cup L'(\nu(\sigma, \empty), D(\sigma, W))$です。
+
+   左辺を変形すると$D(\sigma, L'(\empty, W)) = D(\sigma, \varnothing) = \varnothing$。
+      右辺を変形すると$L'(d(\sigma, \empty), W) \cup L'(\nu(\sigma, \empty), D(\sigma, W)) = L'(\empty, W) \cup L'(\empty, D(\sigma, W)) = \varnothing$。
+
+   よって左辺と右辺が同じ形になったので式は成り立ちます。
+
+3. $e = \sigma'$の場合:
+
+   求める式は$D(\sigma, L'(\sigma, W)) = L'(d(\sigma, \sigma'), W) \cup L'(\nu(\sigma, \sigma'), D(\sigma, W))$です。
+
+   左辺を変形すると$D(\sigma, L'(\sigma', W)) = D(\sigma, \{\ \sigma'\ \} W)$。
+   右辺を変形すると$L'(d(\sigma, \sigma'), W) \cup L'(\nu(\sigma, \sigma'), D(\sigma, W)) = L'(d(\sigma, \sigma'), W) \cup L'(\empty, D(\sigma, W)) = L'(d(\sigma, \sigma'), W)$。
+
+   ここで$\sigma = \sigma'$の場合とそれ以外の場合に分けて考えます。
+
+   1. $\sigma = \sigma'$の場合:
+
+      このとき左辺は$D(\sigma, \{\ \sigma'\ \} W) = W$となる。
+      このとき右辺を変形すると$L'(\sigma, \sigma'), W) = L'(\epsilon, W) = W$。
+
+      よって左辺と右辺が同じ形になったので、このとき式は成り立ちます。
+
+   2. それ以外($\sigma \ne \sigma'$)の場合:
+
+      このとき左辺は$D(\sigma, \{\ \sigma'\ \} W) = \varnothing$となる。
+      このとき右辺を変形すると$L'(d(\sigma, \sigma'), W) = L'(\empty, W) = \varnothing$。
+
+      よって左辺と右辺が同じ形になったので、このとき式は成り立ちます。
+
+   よって全ての場合で式が成り立つことが確認できたので、式は成り立ちます。
+
+4. $e = e_1 | e_2$の場合:
+
+   次の仮定が成り立つとします。
+
+   1. $D(\sigma, L'(e_1, W)) = L'(d(\sigma, e_1), W) \cup L'(\nu(\sigma, e_1), D(\sigma, W))$
+   2. $D(\sigma, L'(e_2, W)) = L'(d(\sigma, e_2), W) \cup L'(\nu(\sigma, e_2), D(\sigma, W))$
+
+   このとき、求める式は$D(\sigma, L'(e_1 | e_2, W)) = L'(d(\sigma, e_1 | e_2), W) \cup L'(\nu(\sigma, e_1 | e_2), D(\sigma, W))$です。
+
+   左辺を変形すると$D(\sigma, L'(e_1 | e_2, W)) = D(\sigma, L'(e_1, W)) \cup D(\sigma, L'(e_2, W))$。
+   右辺を変形すると、
+
+   $$
+   \begin{aligned}
+     & L'(d(\sigma, e_1 | e_2), W) \cup L'(\nu(\sigma, e_1 | e_2), D(\sigma, W))                                                        \\
+   = & L'(d(\sigma, e_1) | d(\sigma, e_2), W) \cup L'(\nu(\sigma, e_1) | \nu(\sigma, e_2), D(\sigma, W))                                \\
+   = & L'(d(\sigma, e_1), W) \cup L'(d(\sigma, e_2), W) \cup L'(\nu(\sigma, e_1), D(\sigma, W)) \cup L'(\nu(\sigma, e_2), D(\sigma, W)) \\
+   = & L'(d(\sigma, e_1), W) \cup L'(\nu(\sigma, e_1), D(\sigma, W)) \cup L'(d(\sigma, e_2), W) \cup L'(\nu(\sigma, e_2), D(\sigma, W)) \\
+   = & D(\sigma, L'(e_1, W)) \cup D(\sigma, L'(e_2, W))                                                                                 \\
+   \end{aligned}
+   $$
+
+   よって左辺と右辺が同じ形になったのでこの式は成り立ちます。
+
+5. $e = e_1 \cdot e_2$の場合:
+
+   次の仮定が成り立つとします。
+
+   1. $D(\sigma, L'(e_1, W)) = L'(d(\sigma, e_1), W) \cup L'(\nu(\sigma, e_1), D(\sigma, W))$
+   2. $D(\sigma, L'(e_2, W)) = L'(d(\sigma, e_2), W) \cup L'(\nu(\sigma, e_2), D(\sigma, W))$
+
+   このとき、求める式は$D(\sigma, L'(e_1 \cdot e_2, W)) = L'(d(\sigma, e_1 \cdot e_2), W) \cup L'(\nu(\sigma, e_1 \cdot e_2), D(\sigma, W))$です。
+
+   左辺を変形すると$D(\sigma, L'(e_1 \cdot e_2, W)) = D(\sigma, L'(e_1, L'(e_2, W)))$。
+   右辺を変形すると、
+
+   $$
+   \begin{aligned}
+     & L'(d(\sigma, e_1 \cdot e_2), W) \cup L'(\nu(\sigma, e_1 \cdot e_2), D(\sigma, W))                                                             \\
+   = & L'(d(\sigma, e_1) e_2 | \nu(\sigma, e_1) d(\sigma, e_2), W) \cup L'(\nu(\sigma, e_1) \nu(\sigma, e_2), D(\sigma, W))                          \\
+   = & L'(d(\sigma, e_1), L'(e_2, W)) \cup L'(\nu(\sigma, e_1), L'(d(\sigma, e_2), W)) \cup L'(\nu(\sigma, e_1), L'(\nu(\sigma, e_2), D(\sigma, W))) \\
+   = & L'(d(\sigma, e_1), L'(e_2, W)) \cup L'(\nu(\sigma, e_1), L'(d(\sigma, e_2, W)) \cup L'(\nu(\sigma, e_2), D(\sigma, W)))                       \\
+   = & L'(d(\sigma, e_1), L'(e_2, W)) \cup L'(\nu(\sigma, e_1), D(\sigma, L'(e_2, W)))                                                               \\
+   = & D(\sigma, L'(e_1, L'(e_2, W)))                                                                                                                \\
+   \end{aligned}
+   $$
+
+   よって左辺と右辺が同じ形になったのでこの式は成り立ちます。
+
+6. $e = e_1^\ast$の場合:
+
+   次の仮定が成り立つとします。
+
+   1. $D(\sigma, L'(e_1, W)) = L'(d(\sigma, e_1), W) \cup L'(\nu(\sigma, e_1), D(\sigma, W))$
+
+   このとき、求める式は$D(\sigma, L'(e_1^\ast, W)) = L'(d(\sigma, e_1^\ast), W) \cup L'(\nu(\sigma, e_1^\ast), D(\sigma, W))$です。
+
+   右辺を変形すると$L'(d(\sigma, e_1^\ast), W) \cup L'(\nu(\sigma, e_1^\ast), D(\sigma, W)) = L'(d(\sigma, e_1) e_1^\ast, W) \cup L'(\empty, D(\sigma, W)) = D(\sigma, W) \cup L'(d(\sigma, e_1) e_1^\ast, W)$。
+   左辺を変形すると、
+
+   $$
+   \begin{aligned}
+     & D(\sigma, L'(e_1^\ast, W))                                                                                                              \\
+   = & D(\sigma, \rho^\ast(e_1, W))                                                                                                            \\
+   = & D(\sigma, \bigcup_{n \ge 0} \rho(e_1, n, W))                                                                                            \\
+   = & \bigcup_{n \ge 0} D(\sigma, \rho(e_1, n, W))                                                                                            \\
+   = & D(\sigma, W) \cup \bigcup_{n \ge 1} D(\sigma, \rho(e_1, n, W))                                                                          \\
+   = & D(\sigma, W) \cup \bigcup_{n \ge 1} D(\sigma, L'(e_1, \rho(e_1, n - 1, W)))                                                             \\
+   = & D(\sigma, W) \cup \bigcup_{n \ge 1} (L'(d(\sigma, e_1), \rho(e_1, n - 1, W)) \cup L'(\nu(\sigma, e_1), D(\sigma, \rho(e_1, n - 1, W)))) \\
+   \end{aligned}
+   $$
+
+   ここで$L'(\nu(\sigma, e_1), D(\sigma, \rho(e_1, n - 1, W))) \subseteq D(\sigma, \rho(e_1, n - 1, W))$であることを思い出します。
+   $n = 1$の場合は$L'(\nu(\sigma, e_1), D(\sigma, \rho(e_1, 0, W))) = L'(\nu(\sigma, e_1), D(\sigma, W))$だが、$D(\sigma, W)$は最初の項であり、既に含まれています。
+   $n = m + 1$の場合でも$L'(\nu(\sigma, e_1), D(\sigma, \rho(e_1, m, W)))$だが、$D(\sigma, \rho(e_1, m, W))$は一つ前の項であり、既に含まれています。
+   従って全ての$L'(\nu(\sigma, e_1), D(\sigma, \rho(e_1, n - 1, W)))$はこれまでの項に含まれていることになります。
+
+   $$
+   \begin{aligned}
+     & D(\sigma, W) \cup \bigcup_{n \ge 1} (L'(d(\sigma, e_1), \rho(e_1, n - 1, W)) \cup L'(\nu(\sigma, e_1), D(\sigma, \rho(e_1, n - 1, W)))) \\
+   = & D(\sigma, W) \cup \bigcup_{n \ge 1} L'(d(\sigma, e_1), \rho(e_1, n - 1, W))                                                             \\
+   = & D(\sigma, W) \cup L'(d(\sigma, e_1), \bigcup_{n \ge 1} \rho(e_1, n - 1, W))                                                             \\
+   = & D(\sigma, W) \cup L'(d(\sigma, e_1), \rho^\ast(e_1, W))                                                                                 \\
+   = & D(\sigma, W) \cup L'(d(\sigma, e_1), L'(e_1^\ast, W))                                                                                   \\
+   \end{aligned}
+   $$
+
+   よって左辺と右辺が同じ形になったのでこの式は成り立ちます。
+
+7. $e = \posla{e}$の場合:
+
+   次の仮定が成り立つとします。
+
+   1. $D(\sigma, L'(e_1, W)) = L'(d(\sigma, e_1), W) \cup L'(\nu(\sigma, e_1), D(\sigma, W))$
+
+   このとき、求める式は$D(\sigma, L'(\posla{e_1}, W)) = L'(d(\sigma, \posla{e_1}), W) \cup L'(\nu(\sigma, \posla{e_1}), D(\sigma, W))$です。
+
+   左辺を変形すると$D(\sigma, L'(\posla{e_1}, W)) = D(\sigma, W \cap L'(e_1, \Sigma^\ast)) = D(\sigma, W) \cap D(\sigma, L'(e_1, \Sigma^\ast))$。
+   右辺を変形すると、
+
+   $$
+   \begin{aligned}
+     & L'(d(\sigma, \posla{e_1}), W) \cup L'(\nu(\sigma, \posla{e_1}), D(\sigma, W))                         \\
+   = & L'(\empty, W) \cup L'(\nu(\sigma, \posla{e_1}), D(\sigma, W))                                         \\
+   = & L'(\nu(\sigma, \posla{e_1}), D(\sigma, W))                                                            \\
+   = & L'(\posla{d(\sigma, e_1) | \nu(\sigma, e_1)}, D(\sigma, W))                                           \\
+   = & D(\sigma, W) \cap (L'(d(\sigma, e_1), \Sigma^\ast) \cup L'(\nu(\sigma, e_1), \Sigma^\ast))            \\
+   = & D(\sigma, W) \cap (L'(d(\sigma, e_1), \Sigma^\ast) \cup L'(\nu(\sigma, e_1), D(\sigma, \Sigma^\ast))) \\
+   = & D(\sigma, W) \cap D(\sigma, L'(e_1, \Sigma^\ast))                                                     \\
+   \end{aligned}
+   $$
+
+   よって左辺と右辺が同じ形になったのでこの式は成り立ちます。
+
+8. $e = \negla{e}$の場合:
+
+   次の仮定が成り立つとします。
+
+   1. $D(\sigma, L'(e_1, W)) = L'(d(\sigma, e_1), W) \cup L'(\nu(\sigma, e_1), D(\sigma, W))$
+
+   このとき、求める式は$D(\sigma, L'(\negla{e_1}, W)) = L'(d(\sigma, \negla{e_1}), W) \cup L'(\nu(\sigma, \negla{e_1}), D(\sigma, W))$です。
+
+   左辺を変形すると$D(\sigma, L'(\negla{e_1}, W)) = D(\sigma, W \setminus L'(e_1, \Sigma^\ast)) = D(\sigma, W) \setminus D(\sigma, L'(e_1, \Sigma^\ast))$。
+   右辺を変形すると、
+
+   $$
+   \begin{aligned}
+     & L'(d(\sigma, \negla{e_1}), W) \cup L'(\nu(\sigma, \negla{e_1}), D(\sigma, W))                              \\
+   = & L'(\empty, W) \cup L'(\nu(\sigma, \negla{e_1}), D(\sigma, W))                                              \\
+   = & L'(\nu(\sigma, \negla{e_1}), D(\sigma, W))                                                                 \\
+   = & L'(\negla{d(\sigma, e_1) | \nu(\sigma, e_1)}, D(\sigma, W))                                                \\
+   = & D(\sigma, W) \setminus (L'(d(\sigma, e_1), \Sigma^\ast) \cup L'(\nu(\sigma, e_1), \Sigma^\ast))            \\
+   = & D(\sigma, W) \setminus (L'(d(\sigma, e_1), \Sigma^\ast) \cup L'(\nu(\sigma, e_1), D(\sigma, \Sigma^\ast))) \\
+   = & D(\sigma, W) \setminus D(\sigma, L'(e_1, \Sigma^\ast))                                                     \\
+   \end{aligned}
+   $$
+
+   よって左辺と右辺が同じ形になったのでこの式は成り立ちます。
+
+これで全ての場合で式が成り立つことが確認できたので、この式は成り立ちます。$\boxed{}$
+
+#### 定理: $D(\sigma, L(e)) = L(d(\sigma, e))$
+
+全ての文字$\sigma$と先読み付き正規表現$e$について、
+
+$$
+D(\sigma, L(e)) = L(d(\sigma, e))
+$$
+
+が成り立つ。
+
+**証明**: 前の補題より、$L(e) = L'(e, \{\ \varepsilon\ \})$なので明らかに成り立つ。
+
+### 考察
+
+かくあって$D(\sigma, L(e)) = L(d(\sigma, e))$が証明できましたが、これはあまり意味が無いのではないかという気がします。
+というのも先読み付き正規表現の等価性$\approx$は単純に$e_1 \approx e_2 \iff L(e_1) = L(e_2)$とは言えないためです。
+例えば$L(\posla{a}) = \varnothing = L(\empty)$だけれど、$\posla{a} \approx L(\empty)$というのは無理がある気がします。
+
+しかし$e_1 \approx e_2 \iff \forall W \subseteq \Sigma^\ast. L'(e_1, W) = L'(e_2, W)$であれば納得できます。
+
+ここで言いたいことは、先読みという演算子は単に先読み付き正規表現$e$に対して言語を返す$L(e)$という操作にマッピングできず、無理に言語に対応させても先読みの情報が失われてしまうということです。
+$d(\sigma, e)$の場合も同様で、$D(\sigma, L'(e, W)) = L'(d(\sigma, e), W) \cup L'(\nu(\sigma, e), D(\sigma, W))$の方が本質的なのではないかと思います。
+
+まぁあれです、定理よりも補題の本質的なやつです。米田の補題とかツォルンの補題とかそんな感じです。
+
+## まとめ
+
+先読み付き正規表現について言語$L(e)$と微分$d(\sigma, e)$を定義して$D(\sigma, L(e)) = L(d(\sigma, e))$であることを確認しました。
+これは自分の知る限り前例が無く、独自の発見だと思っています。
+
+本当はこの先読み付き正規表現の微分を実装しようと思ったのですが、時間が無いので断念しました。
+そのうちやりたいと思います。
+
+言語実装とあまり関係無い感じになってしまいましたが、こんな具合で大丈夫でしょうか？
+
+明日の言語実装Advent Calendar 2018の担当はhsjoihsさんで「Cコンパイラのなにか」になるらしいです。
+
+それでは、ここまで読んでいただきありがとうございました。
